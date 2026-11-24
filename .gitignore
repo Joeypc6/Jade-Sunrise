@@ -1,2 +1,3 @@
-target/
-.sunrise/
+/target/
+/.sunrise*/
+*.smod

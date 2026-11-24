@@ -615,7 +615,7 @@ const DEFAULT_THEME: &str = "jade:dark";
 pub struct Themes;
 
 impl ClientReloadListener for Themes {
-    fn prepare(&self, context: &ClientReloadContext) -> Result<Box<dyn ReloadApply>, ReloadResourceError> {
+    fn prepare(&self, context: &ClientReloadContext) -> Result<Box<dyn FnOnce() + Send + 'static>, ReloadResourceError> {
         let mut themes = Vec::new();
         for id in context.list() {
             let name = id.to_string();
@@ -626,7 +626,7 @@ impl ClientReloadListener for Themes {
             }
         }
         let themes = sorted(themes);
-        Ok(<dyn ReloadApply>::new(move || {
+        Ok(Box::new(move || {
             *LOADED.lock().unwrap_or_else(|e| e.into_inner()) = themes;
             RELOADS.fetch_add(1, Ordering::Relaxed);
         }))

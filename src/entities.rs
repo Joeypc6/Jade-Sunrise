@@ -123,7 +123,7 @@ pub fn lines(host: &mut dyn ServerHost, req: &Request, p: PlayerRef, level: Leve
             let english = format!("{} {{0}}", color.split('_').map(|w| w[..1].to_uppercase() + &w[1..]).collect::<Vec<_>>().join(" "));
             wrap(tr(&format!("jade.access.entity.{color}"), &english, &[]));
         }
-        if living.and_then(|l| l.equipment(host, EquipmentSlot::Saddle)).is_some() {
+        if living.and_then(|l| l.with_equipment(host, EquipmentSlot::Saddle, |_| ())).is_some() {
             wrap(tr("jade.access.entity.saddled", "Saddled {0}", &[]));
         }
     }
@@ -147,11 +147,11 @@ pub fn lines(host: &mut dyn ServerHost, req: &Request, p: PlayerRef, level: Leve
         && let Some(l) = living
         && kind != "minecraft:player"
     {
-        if let Some(s) = l.hand_item(host, Hand::Main) {
-            lines.push(Line::text(tr("jade.access.held_item.main", "Main Hand: %s", &[&item_name(&s.item().id(host))])));
+        if let Some(item) = l.with_hand_item(host, Hand::Main, |s| s.item()) {
+            lines.push(Line::text(tr("jade.access.held_item.main", "Main Hand: %s", &[&item_name(item.id(host).unwrap_or_default())])));
         }
-        if let Some(s) = l.hand_item(host, Hand::Off) {
-            lines.push(Line::text(tr("jade.access.held_item.off", "Off Hand: %s", &[&item_name(&s.item().id(host))])));
+        if let Some(item) = l.with_hand_item(host, Hand::Off, |s| s.item()) {
+            lines.push(Line::text(tr("jade.access.held_item.off", "Off Hand: %s", &[&item_name(item.id(host).unwrap_or_default())])));
         }
     }
     // EntityDetailsBodyProvider: pose, passengers, leads.
@@ -214,11 +214,11 @@ pub fn lines(host: &mut dyn ServerHost, req: &Request, p: PlayerRef, level: Leve
     // PetArmorProvider: a pet's body armour ("Show Damageable" leaves out what wears no durability).
     if on(host, "pet_armor")
         && let Some(l) = living
-        && let Some(s) = l.equipment(host, EquipmentSlot::Body)
-        && (opt(host, "pet_armor_mode") != "damageable" || host.max_damage(s.item()).unwrap_or(0) > 0)
+        && let Some(item) = l.with_equipment(host, EquipmentSlot::Body, |s| s.item())
+        && (opt(host, "pet_armor_mode") != "damageable" || host.max_damage(item).unwrap_or(0) > 0)
     {
-        let id = s.item().id(host);
-        lines.push(Line::new().with(Line::small(&id)).with(El::Text(format!("§f{}", item_name(&id)))));
+        let id = item.id(host).unwrap_or_default();
+        lines.push(Line::new().with(Line::small(id)).with(El::Text(format!("§f{}", item_name(id)))));
     }
     // StatusEffectsProvider: each effect and its time, by category (good green, bad red).
     if on(host, "potion_effects")
@@ -226,8 +226,8 @@ pub fn lines(host: &mut dyn ServerHost, req: &Request, p: PlayerRef, level: Leve
     {
         let limit = num(host, "effects_limit").clamp(1.0, 99.0) as usize;
         for eff in l.effects(host).unwrap_or_default().into_iter().take(limit) {
-            let id = eff.id.id(host);
-            let (ns, path) = id.split_once(':').unwrap_or(("minecraft", &id));
+            let id = eff.id.id(host).unwrap_or_default();
+            let (ns, path) = id.split_once(':').unwrap_or(("minecraft", id));
             let mut name = tr(&format!("effect.{ns}.{path}"), path, &[]);
             if (1..=9).contains(&eff.amplifier) {
                 name = format!("{name} {}", tr(&format!("potion.potency.{}", eff.amplifier), &roman(eff.amplifier + 1), &[]));
@@ -247,7 +247,7 @@ pub fn lines(host: &mut dyn ServerHost, req: &Request, p: PlayerRef, level: Leve
     if on(host, "animal_owner")
         && let Some(owner) = living.and_then(|l| l.owner(host))
     {
-        let name = host.player(owner).and_then(|o| o.name(host)).unwrap_or_else(|| format!("{owner:032x}"));
+        let name = host.player(owner).and_then(|o| o.name(host).map(str::to_owned)).unwrap_or_else(|| format!("{owner:032x}"));
         lines.push(Line::text(tr("jade.owner", "Owner: %s", &[&format!("§f{name}")])));
     }
     // MobGrowthProvider: a baby's growing time (Age counts up to 0).
@@ -325,7 +325,7 @@ pub fn lines(host: &mut dyn ServerHost, req: &Request, p: PlayerRef, level: Leve
     // SulfurCubeProvider: what a sulfur cube swallowed.
     if kind == "minecraft:sulfur_cube"
         && on(host, "sulfur_cube")
-        && let Some(id) = living.and_then(|l| l.equipment(host, EquipmentSlot::Head)).map(|s| s.item().id(host))
+        && let Some(id) = living.and_then(|l| l.with_equipment(host, EquipmentSlot::Head, |s| s.item())).map(|k| k.id(host).unwrap_or_default().to_owned())
     {
         lines.push(Line::new().with(Line::small(&id)).with(El::Text(format!("§f{}", item_name(&id)))));
     }
@@ -357,9 +357,9 @@ pub fn lines(host: &mut dyn ServerHost, req: &Request, p: PlayerRef, level: Leve
                 && let Some(l) = living
             {
                 for slot in [EquipmentSlot::Head, EquipmentSlot::Chest, EquipmentSlot::Legs, EquipmentSlot::Feet, EquipmentSlot::OffHand, EquipmentSlot::MainHand] {
-                    if let Some(s) = l.equipment(host, slot) {
-                        let id = s.item().id(host);
-                        lines.push(Line::new().with(Line::small(&id)).with(El::Text(format!("§f{}", item_name(&id)))));
+                    if let Some(item) = l.with_equipment(host, slot, |s| s.item()) {
+                        let id = item.id(host).unwrap_or_default();
+                        lines.push(Line::new().with(Line::small(id)).with(El::Text(format!("§f{}", item_name(id)))));
                     }
                 }
             }

@@ -80,7 +80,7 @@ thread_local! {
 
 pub fn item_key(h: &dyn Host, id: &str) -> Option<ItemKey> {
     ITEMS.with_borrow_mut(|m| {
-        let map = m.get_or_insert_with(|| h.item_keys().into_iter().map(|k| (k.id(h).to_string(), k)).collect());
+        let map = m.get_or_insert_with(|| h.item_keys().into_iter().map(|k| (k.id(h).unwrap_or_default().to_owned(), k)).collect());
         map.get(id).copied()
     })
 }
@@ -93,7 +93,7 @@ pub fn width(h: &dyn ClientHost, s: &str) -> f32 {
     if let Some(w) = WIDTHS.with_borrow(|m| m.get(s).copied()) {
         return w;
     }
-    let w = h.text_width(&rich(s)).unwrap_or(0) as f32;
+    let w = h.text_width(&rich(s)) as f32;
     WIDTHS.with_borrow_mut(|m| {
         if m.len() > 4096 {
             m.clear();
@@ -268,7 +268,7 @@ impl Gfx<'_> {
     /// A component between `x0` and `x1`, centred on the band `y0`..`y1` (AbstractWidget.renderScrollingString): one
     /// that doesn't fit slides back and forth inside the band, clipped to it.
     pub fn scrolling(&mut self, t: &Text, x0: f32, x1: f32, y0: f32, y1: f32, base: u32) {
-        let w = self.h.text_width(t).unwrap_or(0) as f32;
+        let w = self.h.text_width(t) as f32;
         let y = ((y0 + y1 - 9.0) / 2.0 + 1.0).floor();
         if w <= x1 - x0 {
             self.text_comp(t, [x0, y], base, true);
@@ -293,9 +293,21 @@ impl Gfx<'_> {
         let _ = self.d.pop_clip();
     }
 
-    /// A button as the game draws one.
+    /// A button as the game draws one (AbstractButton.renderWidget): the state's nine-sliced sprite, inactive before
+    /// highlighted, and the label scrolling between 2 pixels in from each side, white or grey (`0xA0A0A0`) when inactive.
+    /// Drawn here since Dev f8aa80e took `DrawContext::widget_button` away (mounted screen widgets replace it).
     pub fn button(&mut self, rect: [f32; 4], label: &Text, active: bool, hover: bool) {
-        let _ = self.d.widget_button(rect, label, active, hover);
+        let [x, y, w, h] = rect;
+        let sprite = if !active {
+            "gui/sprites/widget/button_disabled"
+        } else if hover {
+            "gui/sprites/widget/button_highlighted"
+        } else {
+            "gui/sprites/widget/button"
+        };
+        self.d.gui_nine_slice(sprite, rect, 0xFFFF_FFFF);
+        let color = if active { 0xFFFF_FFFF } else { 0xFFA0_A0A0 };
+        self.scrolling(label, x + 2.0, x + w - 2.0, y, y + h, color);
     }
 
     /// A nine-sliced GUI sprite by its full atlas name.
@@ -311,7 +323,7 @@ impl Gfx<'_> {
         let handle = if (hover || dragging) && active { "gui/sprites/widget/slider_handle_highlighted" } else { "gui/sprites/widget/slider_handle" };
         let hx = x + (t.clamp(0.0, 1.0) * (w - 8.0)).floor();
         self.d.gui_nine_slice(handle, [hx, y, 8.0, 20.0], 0xFFFF_FFFF);
-        let tw = self.h.text_width(label).unwrap_or(0) as f32;
+        let tw = self.h.text_width(label) as f32;
         let color = if active { 0xFFFF_FFFF } else { 0xFFA0_A0A0 };
         self.text_comp(label, [x + ((w - tw) / 2.0).floor(), y + 6.0], color, true);
     }

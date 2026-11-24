@@ -1,4 +1,4 @@
-//! Rebinding Jade's own key mappings from its config screen, as Controls does: `set_mod_key` / `reset_mod_key`
+//! Rebinding Jade's own key mappings from its config screen, as Controls does: `ModKeyMappingRef::set_binding` / `reset_binding`
 //! (they also save `sunrise-mods.txt`). The screen's handlers read the host only, so a change is queued there and
 //! made at the next client tick, where the host can be written.
 
@@ -35,18 +35,53 @@ pub(crate) fn tick(host: &mut dyn ClientHost) {
         _ => return,
     };
     for op in ops {
-        let (name, result) = match op {
-            Op::Set(name, key, modifiers) => {
-                let r = host.set_mod_key(crate::opts::ID, &name, &key, ClientModifiers::new(modifiers));
-                (name, r)
-            }
-            Op::Reset(name) => {
-                let r = host.reset_mod_key(crate::opts::ID, &name);
-                (name, r)
-            }
+        let name = match &op {
+            Op::Set(name, ..) | Op::Reset(name) => name.clone(),
         };
+        // A handle gone stale (the client's roster was replaced) is resolved again once.
+        let mut result = Err(ModKeyRefusal::Stale);
+        for _ in 0..2 {
+            result = mapping(&*host, &name).and_then(|m| match &op {
+                Op::Set(_, key, modifiers) => m.set_binding(host, key, ClientModifiers::new(*modifiers)),
+                Op::Reset(_) => m.reset_binding(host),
+            });
+            if result != Err(ModKeyRefusal::Stale) {
+                break;
+            }
+            forget(&name);
+        }
         if let Err(refusal) = result {
             eprintln!("[jade] key {name}: {refusal}");
         }
     }
+}
+
+/// The handles of Jade's key mappings by registration id, resolved on first use.
+static HANDLES: Mutex<Vec<(String, ModKeyMappingRef)>> = Mutex::new(Vec::new());
+
+/// Jade's key mapping `name` (its registration id).
+fn mapping(host: &dyn ClientHost, name: &str) -> Result<ModKeyMappingRef, ModKeyRefusal> {
+    let mut handles = HANDLES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, m)) = handles.iter().find(|(n, _)| n == name) {
+        return Ok(*m);
+    }
+    let m = host.mod_key_mapping(crate::opts::ID, name)?;
+    handles.push((name.to_owned(), m));
+    Ok(m)
+}
+
+fn forget(name: &str) {
+    HANDLES.lock().unwrap_or_else(|e| e.into_inner()).retain(|(n, _)| n != name);
+}
+
+/// The key and modifiers Jade's mapping `name` is bound to now, as Controls has it.
+pub(crate) fn binding(host: &dyn ClientHost, name: &str) -> Option<(String, ClientModifiers)> {
+    for _ in 0..2 {
+        match mapping(host, name).and_then(|m| m.binding(host).map(|(k, mods)| (k.to_owned(), mods))) {
+            Ok(b) => return Some(b),
+            Err(ModKeyRefusal::Stale) => forget(name),
+            Err(_) => return None,
+        }
+    }
+    None
 }

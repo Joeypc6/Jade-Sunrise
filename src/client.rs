@@ -31,7 +31,7 @@ pub fn register_keys(r: &mut dyn Registrar) {
 
 /// The key a mapping is bound to now (Controls), as the game names it.
 pub fn bound(h: &dyn ClientHost, name: &str) -> String {
-    h.mod_key(ID, &name.replace('.', "_")).map(|(k, _)| k).unwrap_or_else(|| KEYS.iter().find(|k| k[0] == name).map_or("key.keyboard.unknown", |k| k[2]).to_owned())
+    crate::keys::binding(h, &name.replace('.', "_")).map(|(k, _)| k).unwrap_or_else(|| KEYS.iter().find(|k| k[0] == name).map_or("key.keyboard.unknown", |k| k[2]).to_owned())
 }
 
 /// The key's name as Controls shows it.
@@ -206,6 +206,11 @@ pub fn from_server(data: &[u8]) {
     // ShowOverlayPacket.
     if let Some(rest) = text.strip_prefix("o ") {
         with(|c| c.hidden = rest.trim() != "1");
+        return;
+    }
+    // ServerHandshakePacket.shearableBlocks.
+    if let Some(rest) = text.strip_prefix("h ") {
+        crate::facts::shears_received(rest);
         return;
     }
     if text.starts_with('N') {

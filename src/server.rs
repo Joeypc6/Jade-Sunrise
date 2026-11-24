@@ -134,6 +134,11 @@ pub fn from_client(host: &mut dyn ServerHost, player: u128, data: &[u8]) {
     let text = String::from_utf8_lossy(data);
     if let Some(rest) = text.strip_prefix("s ") {
         opts::set_player_values(player, rest);
+        // ServerHandshakePacket.shearableBlocks: the blocks the server's loot tables ask shears of.
+        if let Some(p) = host.player(player) {
+            let msg = crate::facts::shears_message(&*host);
+            let _ = p.send_payload(host, &PayloadId(NET_DATA.into()), PayloadBytes(msg.into_bytes()));
+        }
         return;
     }
     if data.len() > REQUEST_BYTES {
@@ -200,7 +205,7 @@ fn block_request(host: &mut dyn ServerHost, player: u128, p: PlayerRef, level: L
     if out_of_reach(host, p, level, pos.map(f64::from), 4.5) || !level.is_loaded(host, pos) {
         return None;
     }
-    let block = level.block(host, pos)?.id(host).to_string();
+    let block = level.block(host, pos)?.id(host).unwrap_or_default().to_owned();
     let dimension = p.dimension(host).map(|d| d.to_string()).unwrap_or_default();
     let req = Request { player, dimension, pos, block: block.clone(), entity: None, details, hit };
     REQUEST_HIT.with_borrow_mut(|h| *h = hit);
@@ -254,7 +259,7 @@ fn pick(host: &mut dyn ServerHost, p: PlayerRef, level: LevelRef, extra: f64, bl
     let hits = level.ray_trace_entities(host, eye, to, 0.3, Some(me))?;
     let mut best: Option<(f64, EntityRef)> = None;
     for hit in hits {
-        let Some(kind) = hit.entity.kind(host).map(|k| k.id(&*host)) else { continue };
+        let Some(kind) = hit.entity.kind(host).map(|k| k.id(&*host).map(|n| n.as_str().to_owned()).unwrap_or_default()) else { continue };
         let display = matches!(kind.as_str(), "minecraft:block_display" | "minecraft:item_display");
         let special = display || matches!(kind.as_str(), "minecraft:item" | "minecraft:falling_block");
         if !special && extra <= 0.0 {
@@ -274,20 +279,20 @@ fn pick(host: &mut dyn ServerHost, p: PlayerRef, level: LevelRef, extra: f64, bl
     }
     // Displays aren't on the entity-list walk `ray_trace_entities` makes: the level's residents within reach, as
     // Jade's pick sees them (a box 0.3 round the display's position).
-    if let Some(all) = level.all_entities(host) {
-        for e in all {
-            let Some(c) = e.position(host) else { continue };
-            if (0..3).map(|i| (c[i] - eye[i]).powi(2)).sum::<f64>() > (reach + 1.0).powi(2) || host.display(e).is_none() {
-                continue;
-            }
-            let (lo, hi) = ([c[0] - 0.3, c[1] - 0.3, c[2] - 0.3], [c[0] + 0.3, c[1] + 0.3, c[2] + 0.3]);
-            if let Some(t) = ray_box(eye, look, lo, hi, reach.min(block_dist))
-                && best.is_none_or(|(b, _)| t < b)
-            {
-                best = Some((t, e));
-            }
+    let shared: &dyn ServerHost = &*host;
+    let _ = level.visit_all_entities(shared, &mut |e| {
+        let Some(c) = e.position(shared) else { return std::ops::ControlFlow::Continue(()) };
+        if (0..3).map(|i| (c[i] - eye[i]).powi(2)).sum::<f64>() > (reach + 1.0).powi(2) || shared.display(e).is_none() {
+            return std::ops::ControlFlow::Continue(());
         }
-    }
+        let (lo, hi) = ([c[0] - 0.3, c[1] - 0.3, c[2] - 0.3], [c[0] + 0.3, c[1] + 0.3, c[2] + 0.3]);
+        if let Some(t) = ray_box(eye, look, lo, hi, reach.min(block_dist))
+            && best.is_none_or(|(b, _)| t < b)
+        {
+            best = Some((t, e));
+        }
+        std::ops::ControlFlow::Continue(())
+    });
     let (d, e) = best?;
     describe(host, p.uuid(), p, level, e, details, true, d)
 }
@@ -315,7 +320,7 @@ fn ray_box(eye: [f64; 3], dir: [f64; 3], lo: [f64; 3], hi: [f64; 3], reach: f64)
 /// An entity's answer: `E id picked dist kind`, its custom name (or nothing), its icon item, its lines.
 #[allow(clippy::too_many_arguments)]
 fn describe(host: &mut dyn ServerHost, player: u128, p: PlayerRef, level: LevelRef, e: EntityRef, details: bool, picked: bool, d: f64) -> Option<String> {
-    let kind = e.kind(host)?.id(&*host);
+    let kind = e.kind(host)?.id(&*host).map(|n| n.as_str().to_owned()).unwrap_or_default();
     let nbt = e.nbt(host).unwrap_or_default();
     let name = if cget(&nbt, "CustomName").is_some() {
         e.name(host).unwrap_or_default().replace('\n', " ")
@@ -327,8 +332,8 @@ fn describe(host: &mut dyn ServerHost, player: u128, p: PlayerRef, level: LevelR
     };
     // BlockDisplayProvider and ItemDisplayProvider: what a display shows, through the displays API.
     let shown = host.display(e).and_then(|d| match d.item(host) {
-        Some(stack) => Some(stack.item().id(host)),
-        None => d.block_state(host).and_then(|s| host.block_item(s.block())).map(|i| i.id(host)),
+        Some(stack) => Some(stack.item().id(host).unwrap_or_default().to_owned()),
+        None => d.block_state(host).and_then(|s| host.block_item(s.block())).map(|i| i.id(host).unwrap_or_default().to_owned()),
     });
     let icon = shown.filter(|id| id != "minecraft:air").unwrap_or_else(|| entity_icon(host, &kind, &nbt));
     let dimension = p.dimension(host).map(|d| d.to_string()).unwrap_or_default();
@@ -356,7 +361,7 @@ fn entity_icon(host: &dyn Host, kind: &str, nbt: &Compound) -> String {
         k if k.ends_with("minecart") || k.ends_with("boat") || k.ends_with("raft") => k.to_owned(),
         _ => {
             let egg = format!("{kind}_spawn_egg");
-            if host.item_keys().into_iter().any(|k| k.id(host) == egg) { egg } else { String::new() }
+            if host.item_keys().into_iter().any(|k| k.id(host) == Some(egg.as_str())) { egg } else { String::new() }
         }
     }
 }
@@ -474,12 +479,12 @@ fn fluid_lines(host: &mut dyn ServerHost, level: LevelRef, pos: [i32; 3], detail
             let res = cap.resource(host, i);
             let amount = cap.amount(host, i);
             let capacity = match (&res, &water) {
-                (Some(r), _) => cap.capacity(host, i, r),
-                (None, Some(w)) => cap.capacity(host, i, w),
+                (Some(r), _) => cap.capacity(host, i, Some(r)),
+                (None, Some(w)) => cap.capacity(host, i, Some(w)),
                 _ => 0,
             };
             let id = res.as_ref().map(|r| match r.fluid().clone() {
-                FluidIdentity::Resolved(k) => k.id(host),
+                FluidIdentity::Resolved(k) => k.id(host).unwrap_or_default().to_owned(),
                 FluidIdentity::Unresolved(u) => u.id(host),
                 _ => String::new(),
             });
@@ -498,7 +503,7 @@ fn item_lines(host: &mut dyn ServerHost, level: LevelRef, pos: [i32; 3], details
         if let Some(r) = cap.resource(host, i) {
             let n = cap.amount(host, i);
             if n > 0 {
-                stacks.push((r.item().id(host), n));
+                stacks.push((r.item().id(host).unwrap_or_default().to_owned(), n));
             }
         }
     }
@@ -560,7 +565,7 @@ fn vanilla_block(host: &mut dyn ServerHost, req: &Request, p: PlayerRef, level: 
         push_progress(progress, lines);
         return;
     };
-    let kind = be.kind(host).map(|k| k.id(host)).unwrap_or_default();
+    let kind = be.kind(host).and_then(|k| k.id(host).map(str::to_owned)).unwrap_or_default();
     // ItemStorageProvider.putData: the block's loot not rolled for anyone, or its lock, instead of its items.
     if let Some(table) = string(cget(&data, "LootTable")) {
         if on(host, "loot_table") && op {
@@ -733,47 +738,44 @@ fn push_progress(progress: Vec<(f32, Option<String>)>, lines: &mut Vec<Line>) {
     }
 }
 
-/// `register_commands`: `/jade show|hide <targets>` (JadeServerCommand).
+/// `register_commands`: `/jade show|hide <targets>` (JadeServerCommand), each with its executor, and the bare `/jade`
+/// opening the commands menu (`commands_menu.rs`).
 pub fn register_commands(e: &mut RegisterCommandsEvent<'_>) {
-    e.commands.push(Command::op("jade show <targets:player>", 2));
-    e.commands.push(Command::op("jade hide <targets:player>", 2));
-    e.commands.push(Command::op("jade show", 2));
-    e.commands.push(Command::op("jade hide", 2));
+    for (usage, show) in [
+        ("jade show <targets:player>", true),
+        ("jade hide <targets:player>", false),
+        ("jade show", true),
+        ("jade hide", false),
+    ] {
+        e.commands.push(Command::op(usage, 2).executes(move |host, source, invocation| overlay(host, source, invocation, show).ok_or_else(|| Box::new(Text::literal("")))));
+    }
+    e.commands.push(crate::commands_menu::command());
 }
 
 fn permitted(source: &CommandSource) -> bool {
     !matches!(source.permission(), PermissionLevel::All | PermissionLevel::Moderators)
 }
 
-/// `run_mod_command`.
-pub fn run_command(host: &mut dyn ServerHost, e: &mut RunModCommandEvent<'_>) -> Flow {
-    let lits: Vec<&str> = e.command.literals.iter().map(String::as_str).collect();
-    let feedback = |host: &mut dyn ServerHost, t: String| {
-        let _ = host.commands().feedback(Text::literal(t));
-    };
-    match lits.as_slice() {
-        ["jade", verb @ ("show" | "hide")] => {
-            if !permitted(e.source) {
-                return Flow::Cancel;
-            }
-            let show = *verb == "show";
-            let targets: Vec<PlayerRef> = match e.command.argument("targets") {
-                Some(CommandArgumentValue::Player(p)) => vec![*p],
-                _ => match e.source {
-                    CommandSource::Player { player, .. } => vec![*player],
-                    _ => Vec::new(),
-                },
-            };
-            let mut told = 0;
-            for p in targets {
-                let line = format!("o {}", u8::from(show));
-                if p.send_payload(host, &PayloadId(NET_DATA.into()), PayloadBytes(line.into_bytes())).is_ok() {
-                    told += 1;
-                }
-            }
-            feedback(host, format!("Overlay {} for {told} players", if show { "shown" } else { "hidden" }));
-            Flow::Cancel
-        }
-        _ => Flow::Continue,
+/// `/jade show|hide [targets]`: tells the targets' clients (the source's player without targets) to show or hide the
+/// overlay, then says how many were told.
+fn overlay(host: &mut dyn ServerHost, source: &CommandSource, invocation: &CommandInvocation, show: bool) -> Option<i32> {
+    if !permitted(source) {
+        return None;
     }
+    let targets: Vec<PlayerRef> = match invocation.argument("targets") {
+        Some(CommandArgumentValue::Player(p)) => vec![*p],
+        _ => match source {
+            CommandSource::Player { player, .. } => vec![*player],
+            _ => Vec::new(),
+        },
+    };
+    let mut told = 0;
+    for p in targets {
+        let line = format!("o {}", u8::from(show));
+        if p.send_payload(host, &PayloadId(NET_DATA.into()), PayloadBytes(line.into_bytes())).is_ok() {
+            told += 1;
+        }
+    }
+    let _ = host.commands().feedback(Text::literal(format!("Overlay {} for {told} players", if show { "shown" } else { "hidden" })));
+    Some(told)
 }

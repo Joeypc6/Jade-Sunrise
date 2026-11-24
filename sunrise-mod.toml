@@ -2,13 +2,22 @@ id = "jade"
 name = "Jade"
 version = "26.3.8"
 description = "Shows what you are looking at. A port of Jade (Snownee, CC BY-NC-SA 4.0) to Sunrise's mod API."
-authors = ["Snownee", "Sunrise port: Joeypc6"]
+authors = ["Sunrise port: Joeypc6", "Snownee"]
 api = "0.2"
 side = "both"
 capabilities = ["registries"]
+license = "CC-BY-NC-SA-4.0"
+license_url = "https://github.com/Joeypc6/Jade-Sunrise/blob/main/LICENSE"
+credits = "Sunrise port by Joeypc6, based on Jade by Snownee (CC BY-NC-SA 4.0)."
+homepage = "https://github.com/Joeypc6/Jade-Sunrise"
+issues = "https://github.com/Joeypc6/Jade-Sunrise/issues"
+
+[dependencies]
+# The commands menu (/<id>, assets/<id>/commands) is drawn by the shared guide, when installed.
+guideme = { version = "^0.1", optional = true }
 
 [native]
 game = "26.3"
-# Pinned to Sunrise Nightly 2026-11-17 (2d81263) until the first release publishes an SDK.
-sunrise = "ed3ac19558d8dc1092c431312848cbb58fb01e41"
-mixins = "5a64af938ec86b00d53d16a408aabc0038fb3e57"
+# Pinned to Sunrise Dev 2026-11-24 (f8aa80e).
+sunrise = "f8aa80e4c40cf1a5d30e85d13937f3fcf06d8237"
+mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"

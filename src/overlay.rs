@@ -182,7 +182,7 @@ pub fn bkey(h: &dyn Host, id: &str) -> Option<BlockKey> {
 pub fn block_item(h: &dyn ClientHost, block: &str) -> Option<String> {
     let key = bkey(h, block)?;
     let item = h.block_item(key)?;
-    let id = item.id(h).to_string();
+    let id = item.id(h).unwrap_or_default().to_owned();
     (id != "minecraft:air").then_some(id)
 }
 
@@ -439,13 +439,13 @@ const TOOL_TYPES: [(&[&str], bool); 6] = [
 ];
 
 /// A vanilla tool's Tool component rule as tags: the tier's `incorrect_for_<tier>_tool` denies, its kind's
-/// `mineable/<kind>` mines and drops (a sword: cobweb; shears: what their loot asks shears of).
+/// `mineable/<kind>` mines and drops (a sword: cobweb; shears: what the server's loot tables ask shears of).
 fn tool_correct(h: &dyn ClientHost, tool: &str, block: &str) -> bool {
     let Some(key) = bkey(h, block) else { return false };
     let path = tool.strip_prefix("minecraft:").unwrap_or(tool);
     let tag = |t: &str| h.block_in_tag(key, t) == Some(true);
     if path == "shears" {
-        return crate::facts::fact(block).is_some_and(|f| f.9) || matches!(block, "minecraft:cobweb" | "minecraft:redstone_wire" | "minecraft:tripwire") || tag("minecraft:leaves") || tag("minecraft:wool");
+        return crate::facts::shearable(block) || matches!(block, "minecraft:cobweb" | "minecraft:redstone_wire" | "minecraft:tripwire") || tag("minecraft:leaves") || tag("minecraft:wool");
     }
     let Some((tier, kind)) = path.rsplit_once('_') else { return false };
     if kind == "sword" {
@@ -455,12 +455,12 @@ fn tool_correct(h: &dyn ClientHost, tool: &str, block: &str) -> bool {
 }
 
 thread_local! {
-    static HARVEST: RefCell<(u32, std::collections::HashMap<String, Vec<String>>)> = RefCell::new((u32::MAX, Default::default()));
+    static HARVEST: RefCell<((u32, u32), std::collections::HashMap<String, Vec<String>>)> = RefCell::new(((u32::MAX, u32::MAX), Default::default()));
 }
 
 /// HarvestToolProvider.getTool, cached per block: the lowest tier of each tool type that suits it.
 fn harvest_tools(h: &dyn ClientHost, block: &str, insta: bool) -> Vec<String> {
-    let epoch = opts::settings_epoch();
+    let epoch = (opts::settings_epoch(), crate::facts::shears_generation());
     if let Some(t) = HARVEST.with_borrow_mut(|(at, cache)| {
         if *at != epoch {
             *at = epoch;
@@ -487,21 +487,17 @@ fn harvest_tools(h: &dyn ClientHost, block: &str, insta: bool) -> Vec<String> {
 /// the held stack: a mod's tool counts by its own `minecraft:tool` rules. Where the game has no answer, the vanilla
 /// tools' rules as tags.
 fn held_correct(h: &dyn ClientHost, block: &str) -> bool {
-    let Some(held) = me(h).and_then(|(_, l)| l?.hand_item(h, Hand::Main)) else { return false };
+    let Some(held) = me(h).and_then(|(_, l)| l?.with_hand_item(h, Hand::Main, |s| s.project()).flatten()) else { return false };
     let state = bkey(h, block).and_then(|k| h.block_state_default(k));
     if let Some(correct) = state.and_then(|s| h.block_states().is_correct_tool_for_drops(&held, s)) {
         return correct;
     }
-    tool_correct(h, &held.item().id(h).to_string(), block)
+    tool_correct(h, held.item().id(h).unwrap_or_default(), block)
 }
 
-/// `BlockState.requiresCorrectToolForDrops()` as the game answers it (a mod's block too); the vanilla facts table
-/// where it has no answer.
+/// `BlockState.requiresCorrectToolForDrops()` as the game answers it (a mod's block too).
 fn requires_tool(h: &dyn ClientHost, block: &str) -> bool {
-    bkey(h, block)
-        .and_then(|k| h.block_state_default(k))
-        .and_then(|s| h.block_states().requires_correct_tool(s))
-        .unwrap_or_else(|| crate::facts::fact(block).is_some_and(|f| f.1))
+    crate::facts::fact(h, block).is_some_and(|f| f.requires_tool)
 }
 
 /// HarvestToolProvider: the tools the block wants, with a tick or cross where the block needs the right one.
@@ -512,8 +508,7 @@ fn harvest_tool(h: &dyn ClientHost, block: &str) -> Option<Vec<El>> {
     if me(h).is_some_and(|(p, _)| p.game_mode(h) == Some(GameMode::Adventure)) {
         return None;
     }
-    let fact = crate::facts::fact(block);
-    let hardness = bkey(h, block).and_then(|k| h.block_state_default(k)).and_then(|s| h.block_states().destroy_speed(s)).or(fact.map(|f| f.2)).unwrap_or(0.0);
+    let hardness = crate::facts::fact(h, block).map_or(0.0, |f| f.hardness);
     if hardness < 0.0 {
         return on(h, "harvest_unbreakable").then(|| vec![El::Text(format!("§c{}", tr(h, "jade.harvest_tool.unbreakable", "Unbreakable")))]);
     }
@@ -558,7 +553,7 @@ fn vanilla_block(h: &dyn ClientHost, pos: [i32; 3], block: &str, state: &str, de
     let p = |k: &str| prop(state, k);
     // CropProgressProvider.
     if let Some(age) = p("age").and_then(|a| a.parse::<u32>().ok()).filter(|_| on(h, "crop_progress")) {
-        let most = bkey(h, block).and_then(|k| h.block_states().definition(k)).and_then(|defs| defs.into_iter().find(|d| d.name == "age").map(|d| d.values.iter().filter_map(|v| v.parse::<u32>().ok()).max().unwrap_or(7))).unwrap_or(7).max(1);
+        let most = bkey(h, block).and_then(|k| h.block_states().definition(k)).and_then(|defs| defs.iter().find(|d| d.name == "age").map(|d| d.values.iter().filter_map(|v| v.parse::<u32>().ok()).max().unwrap_or(7))).unwrap_or(7).max(1);
         let crop = block.ends_with("_crop")
             || matches!(block, "minecraft:wheat" | "minecraft:carrots" | "minecraft:potatoes" | "minecraft:beetroots" | "minecraft:melon_stem" | "minecraft:pumpkin_stem" | "minecraft:sweet_berry_bush" | "minecraft:nether_wart" | "minecraft:cocoa" | "minecraft:torchflower_crop" | "minecraft:pitcher_crop");
         if crop {
@@ -665,7 +660,7 @@ fn vanilla_block(h: &dyn ClientHost, pos: [i32; 3], block: &str, state: &str, de
                     continue;
                 }
                 for dy in 0..=1 {
-                    if level.block(h, [pos[0] + dx, pos[1] + dy, pos[2] + dz]).is_some_and(|b| b.id(h).to_string() == "minecraft:bookshelf") {
+                    if level.block(h, [pos[0] + dx, pos[1] + dy, pos[2] + dz]).is_some_and(|b| b.id(h) == Some("minecraft:bookshelf")) {
                         power += 1;
                     }
                 }
@@ -818,20 +813,15 @@ fn info_lines(h: &dyn ClientHost, seen: &Seen, kind: Option<&str>, lines: &mut V
                 }
             }
             if on(h, "block_properties") {
-                let f = crate::facts::fact(block);
-                let hardness = bkey(h, block).and_then(|k| h.block_state_default(k)).and_then(|s| h.block_states().destroy_speed(s)).or(f.map(|f| f.2)).unwrap_or(0.0);
-                lines.push(Line::text(trf(h, "jade.block_destroy_time", "Destroy time: %s", &[&format!("§f{}", trim2(f64::from(hardness)))])));
-                if let Some(f) = f {
-                    lines.push(Line::text(trf(h, "jade.block_explosion_resistance", "Explosion resistance: %s", &[&format!("§f{}", trim2(f64::from(f.3)))])));
-                    lines.push(Line::text(format!("Friction: §f{}", trim2(f64::from(f.4)))));
-                    lines.push(Line::text(trf(h, "jade.block_speed_factor", "Speed factor: %s", &[&format!("§f{}", trim2(f64::from(f.5)))])));
-                    lines.push(Line::text(trf(h, "jade.block_jump_factor", "Jump factor: %s", &[&format!("§f{}", trim2(f64::from(f.6)))])));
-                    if f.7 >= 0 {
-                        lines.push(Line::text(trf(h, "jade.block_ignite_odds", "Ignite odds: %s", &[&format!("§f{}", f.7)])));
-                    }
-                    if f.8 >= 0 {
-                        lines.push(Line::text(trf(h, "jade.block_burn_odds", "Burn odds: %s", &[&format!("§f{}", f.8)])));
-                    }
+                // BlockPropertiesProvider. Speed and jump factors and fire's odds have no read in the mod API yet, so
+                // their lines are left out until it has one (jade-facts.md).
+                let f = crate::facts::fact(h, block).unwrap_or_default();
+                lines.push(Line::text(trf(h, "jade.block_destroy_time", "Destroy time: %s", &[&format!("§f{}", trim2(f64::from(f.hardness)))])));
+                if let Some(r) = f.explosion_resistance {
+                    lines.push(Line::text(trf(h, "jade.block_explosion_resistance", "Explosion resistance: %s", &[&format!("§f{}", trim2(f64::from(r)))])));
+                }
+                if let Some(fr) = f.friction {
+                    lines.push(Line::text(format!("Friction: §f{}", trim2(f64::from(fr)))));
                 }
             }
             if show_id {
@@ -842,9 +832,9 @@ fn info_lines(h: &dyn ClientHost, seen: &Seen, kind: Option<&str>, lines: &mut V
                         && let Some(be) = h.block_entity(level, *pos)
                         && let Some(kind) = be.kind(h)
                     {
-                        let id = kind.id(h);
+                        let id = kind.id(h).unwrap_or_default();
                         if !id.is_empty() {
-                            lines.push(Line::text(format!("§8{}", trf(h, "config.jade.plugin_jade.registry_name.special.block_entity_type", "BlockEntity: %s", &[&id]))));
+                            lines.push(Line::text(format!("§8{}", trf(h, "config.jade.plugin_jade.registry_name.special.block_entity_type", "BlockEntity: %s", &[id]))));
                         }
                     }
                     let flowing = prop(&state, "level").is_some_and(|l| l != "0");
@@ -1473,7 +1463,7 @@ pub fn draw_layer(h: &dyn ClientHost, d: &mut dyn DrawContext) {
     if let Some((p, _)) = me(h)
         && let Some(at) = p.entity().position(h)
         && let Some(level) = level(h)
-        && level.block(h, at.map(|v| v.floor() as i32)).is_some_and(|b| b.id(h).to_string() == "minecraft:powder_snow")
+        && level.block(h, at.map(|v| v.floor() as i32)).is_some_and(|b| b.id(h) == Some("minecraft:powder_snow"))
     {
         with(|c| c.powder_at = Some(Instant::now()));
     }
@@ -1545,12 +1535,12 @@ pub fn item_tooltip(h: &dyn ClientHost, e: &mut ItemTooltipEvent<'_>) {
     if !h.on(opts::ID) || !on(h, "item_mod_name") {
         return;
     }
-    let id = e.stack.item().id(h).to_string();
+    let id = e.stack.item().id(h).unwrap_or_default().to_owned();
     let ns = id.split_once(':').map_or("minecraft", |(n, _)| n);
     let mut style = mod_api::text::TextStyle::default();
     style.color = Some("blue".to_owned());
     style.italic = Some(true);
-    e.lines.push((Text::literal(mod_name(h, ns)).with_style(style), u32::MAX));
+    let _ = e.lines.push(Text::literal(mod_name(h, ns)).with_style(style), u32::MAX);
 }
 
 /// The plain text of a box, line by line (what Narrate Target would say).

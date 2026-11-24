@@ -11,6 +11,7 @@
 //!   capabilities, everything about entities (`server.rs`, `entities.rs`);
 //! - settings live in `config/jade/` as Java's (`opts.rs`); the config screens are the mod's own screen
 //!   (`config_ui.rs`).
+mod commands_menu;
 mod api;
 mod client;
 mod config_ui;
@@ -32,6 +33,8 @@ pub(crate) struct Mod;
 #[mod_api::sunrise_mod]
 impl Hooks for Mod {
     fn register(&self, r: &mut dyn Registrar, _cx: &RegistrationContext) {
+        // `/<ns>` commands menu: the client's side of its channel.
+        commands_menu::register_payload(r);
         client::register_keys(r);
         server::register_rules(r);
         // `jade:request` (client to server) and `jade:data` (server to client). Optional, as Jade's: a client without
@@ -43,12 +46,12 @@ impl Hooks for Mod {
     }
 
     fn register_gui_layers(&self, _cx: &RegistrationContext, event: &mut RegisterGuiLayersEvent<'_>) {
-        event.layers.push(GuiLayer { id: overlay::LAYER.to_owned(), placement: GuiLayerPlacement::Below("minecraft:chat".to_owned()) });
-    }
-
-    fn gui_layer_draw(&self, host: &dyn ClientHost, event: &mut GuiLayerDrawEvent<'_>) {
-        if event.layer == overlay::LAYER {
-            overlay::draw_layer(host, event.draw);
+        if !event.layers.register(
+            overlay::LAYER.to_owned(),
+            GuiLayerPlacement::Below("minecraft:chat".to_owned()),
+            Box::new(|host, draw| overlay::draw_layer(host, draw)),
+        ) {
+            eprintln!("[jade] HUD layer {} not registered", overlay::LAYER);
         }
     }
 
@@ -74,10 +77,6 @@ impl Hooks for Mod {
         server::register_commands(event);
     }
 
-    fn run_mod_command(&self, host: &mut dyn ServerHost, event: &mut RunModCommandEvent<'_>) -> Flow {
-        server::run_command(host, event)
-    }
-
     fn register_client_commands(&self, _host: &mut dyn ClientHost, event: &mut RegisterClientCommandsEvent<'_>) {
         client::register_client_commands(event);
     }
@@ -90,12 +89,18 @@ impl Hooks for Mod {
         overlay::item_tooltip(host, event);
     }
 
-    fn add_client_reload_listeners(&self, _host: &dyn ClientHost, event: &mut AddClientReloadListenersEvent<'_>) {
+    fn add_client_reload_listeners(&self, _context: &dyn ClientReloadListenerContext, event: &mut AddClientReloadListenersEvent<'_>) {
         theme::register(event.listeners);
     }
 
     fn client_player_logging_out(&self, _host: &mut dyn ClientHost, _event: &mut ClientPlayerLoggingOutEvent) {
         client::logged_out();
+        facts::forget_client();
+    }
+
+    fn loot_table_load(&self, _context: &dyn DataLoadContext, event: &mut LootTableLoadEvent<'_>) {
+        // LootTableMineableCollector: read only, the table is left as it came.
+        facts::loot_table_loaded(event.id, event.table);
     }
 
     fn player_logged_out(&self, _host: &mut dyn ServerHost, event: &mut PlayerLoggedOutEvent<'_>) {

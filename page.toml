@@ -1,0 +1,28 @@
+summary = "A small overlay that tells you what you are looking at: the block, fluid or creature, its mod and its tool."
+description = """
+A small overlay at the top of the screen that tells you what you are looking at.
+
+A port of [Jade](https://github.com/Snownee/Jade) by Snownee to [Sunrise](https://playsunrise.net) (Minecraft Java 26.3), under the original's licence (CC BY-NC-SA 4.0, in `LICENSE`; see `NOTICE`): free to use and share, not for commercial use, and changes stay under the same licence. One native mod on Sunrise's mod API; the code is a rewrite of Jade's logic, and Jade's own language files, sprites and themes are included.
+
+What it does:
+
+- Names the block, fluid or entity under your crosshair, with its icon, its mod, the tool that harvests it and the breaking progress.
+- Shows what is inside containers, machines' energy, and lines other mods add through Jade's provider API.
+- Lite mode, longer reach, ignore lists, scale, position, opacity and fade, as in Jade.
+- Jade's seven themes, and themes from resource packs.
+- The config screens, with search and four profiles; the keys are under Controls, category Jade.
+- `/jadec` client commands, `/jade show|hide` for operators, and the `jade:max_position_deviation` game rule.
+- In multiplayer the server answers only for blocks and entities in your reach, and shows a locked container as locked.
+"""
+authors = ["Sunrise port: Joeypc6", "Snownee"]
+homepage = "https://github.com/Joeypc6/Jade-Sunrise"
+issues = "https://github.com/Joeypc6/Jade-Sunrise/issues"
+categories = ["utility"]
+
+[[screenshots]]
+path = "page/1-overlay.jpg"
+caption = "Jade's overlay on an Iron Furnaces furnace: its energy, contents and mod."
+
+[[screenshots]]
+path = "page/2-furnaces.jpg"
+caption = "Looking at an Obsidian Furnace: its energy, contents and mod, with the pickaxe it needs."
